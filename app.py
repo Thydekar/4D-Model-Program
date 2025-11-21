@@ -1,213 +1,202 @@
 import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
-from scipy.spatial import ConvexHull
 
-st.set_page_config(page_title="4D Explorer", layout="wide")
-st.title("Higher-Dimensional Geometry Explorer")
+st.set_page_config(page_title="Tetrahedral 4D Explorer", layout="wide")
+st.title("🔮 Tetrahedral 4D Coordinate System")
 
-# Sidebar
-mode = st.sidebar.radio("Mode", ["3D Model", "4D → 3D Projection", "Pure 4D Polytopes"])
-
-# Session state for 3D points
-if "points_3d" not in st.session_state:
-    # Start with perfect tetrahedral methane-like positions
+# ====================== TETRAHEDRAL BASIS (4 axes at 109.5°) ======================
+@st.cache_data
+def tetrahedral_basis():
+    # Four vectors from center to tetrahedron vertices, all unit length, 109.5° apart
     a = 1.0
-    st.session_state.points_3d = np.array([
-        [ 0.000,  1.000,  0.000],  # top → Y
-        [ 0.943, -0.333,  0.000],  # right → roughly X
-        [-0.471, -0.333, -0.816],  # back-left → Z + W direction
-        [-0.471, -0.333,  0.816],  # front-left → Z direction
-    ]) * 1.2
+    v1 = np.array([ 1,  1,  1])
+    v2 = np.array([ 1, -1, -1])
+    v3 = np.array([-1,  1, -1])
+    v4 = np.array([-1, -1,  1])
+    basis = np.array([v1, v2, v3, v4])
+    basis = basis / np.linalg.norm(basis[0])
+    return basis  # shape (4,3)
 
-# Helper: snap to regular tetrahedron (exact 109.5°)
-def make_regular_tetrahedron():
-    phi = (1 + np.sqrt(5)) / 2
-    v1 = np.array([1, 1, 1])
-    v2 = np.array([1, -1, -1])
-    v3 = np.array([-1, 1, -1])
-    v4 = np.array([-1, -1, 1])
-    verts = np.array([v1, v2, v3, v4])
-    verts = verts / np.linalg.norm(verts[0]) * 1.2
-    # Rotate so one vertex points straight up (like methane image)
-    up = np.array([0, 1, 0])
-    current_up = verts[0]
-    axis = np.cross(current_up, up)
-    if np.linalg.norm(axis) > 0:
-        axis /= np.linalg.norm(axis)
-        angle = np.arccos(np.dot(current_up, up))
-        c, s = np.cos(angle), np.sin(angle)
-        R = np.eye(3) + s*np.cross(axis[:,None], axis[None,:]*-1) + (1-c)*(axis[:,None]@axis[None,:])
-        verts = verts @ R.T
-    return verts
+basis = tetrahedral_basis()
+axis_colors = ["cyan", "magenta", "yellow", "lime"]
 
-# ================================
-# MODE 1: 3D Model (fully draggable)
-# ================================
-if mode == "3D Model":
-    st.header("3D Model – Drag Points with Mouse")
-    n = st.slider("Number of points", 3, 8, 4)
+# ====================== 4D → 3D via Tetrahedral Embedding ======================
+def embed_4d_to_3d(point_4d, scale=1.0):
+    """point_4d: [x,y,z,w] → 3D point using tetrahedral basis"""
+    return scale * (point_4d[0]*basis[0] + point_4d[1]*basis[1] + 
+                    point_4d[2]*basis[2] + point_4d[3]*basis[3])
 
-    if len(st.session_state.points_3d) != n or st.button("Reset to Regular Tetrahedron"):
-        st.session_state.points_3d = make_regular_tetrahedron()[:n]
+# ====================== Generate Polytopes ======================
+@st.cache_data
+def get_polytope(name):
+    if name == "5-cell (Pentachoron)":
+        # Standard 5-cell in 4D
+        phi = (1 + np.sqrt(5))/2
+        s = 1 / np.sqrt(8)
+        verts = np.array([
+            [ s,  s,  s, -1.25*s],
+            [ s, -s, -s, -1.25*s],
+            [-s,  s, -s, -1.25*s],
+            [-s, -s,  s, -1.25*s],
+            [0,  0,  0,  np.sqrt(5)*s*2]
+        ])
+        edges = [(0,1),(0,2),(0,3),(0,4),(1,2),(1,3),(1,4),(2,3),(2,4),(3,4)]
+        return verts, edges
 
-    fig = go.Figure()
+    elif name == "Tesseract (4D Cube)":
+        verts = np.array([[x,y,z,w] for x in [-1,1] for y in [-1,1] 
+                                        for z in [-1,1] for w in [-1,1]]) * 0.6
+        edges = []
+        for i in range(16):
+            p = verts[i]
+            for j in range(i+1,16):
+                if np.sum(np.abs(p - verts[j])) == 2:
+                    edges.append((i,j))
+        return verts, edges
 
-    # Points
-    fig.add_trace(go.Scatter3d(
-        x=st.session_state.points_3d[:,0],
-        y=st.session_state.points_3d[:,1],
-        z=st.session_state.points_3d[:,2],
-        mode="markers+text",
-        marker=dict(size=12, color="cyan"),
-        text=[f"P{i}" for i in range(len(st.session_state.points_3d))],
-        name="Vertices"
-    ))
+    elif name == "16-cell":
+        verts = np.array([[±1,0,0,0], [0,±1,0,0], [0,0,±1,0], [0,0,0,±1]]) * 1.2
+        verts = verts.reshape(-1,4)
+        edges = [(i,j) for i in range(8) for j in range(i+1,8) 
+                        if np.sum(np.abs(verts[i] - verts[j])) == 2]
+        return verts, edges
 
-    # Edges
-    pts = st.session_state.points_3d
-    for i in range(len(pts)):
-        for j in range(i+1, len(pts)):
-            fig.add_trace(go.Scatter3d(
-                x=[pts[i,0], pts[j,0]],
-                y=[pts[i,1], pts[j,1]],
-                z=[pts[i,2], pts[j,2]],
-                mode="lines",
-                line=dict(color="white", width=4),
-                showlegend=False
-            ))
+    elif name == "24-cell":
+        verts = np.concatenate([
+            np.array([[±1,±1,0,0] for _ in range(4)] + 
+                     [[±1,0,±1,0] for _ in range(4)] + 
+                     [[±1,0,0,±1] for _ in range(4)] +
+                     [[0,±1,±1,0] for _ in range(4)] +
+                     [[0,±1,0,±1] for _ in range(4)] +
+                     [[0,0,±1,±1] for _ in range(4)]) * 0.7,
+            np.array([[±0.5,±0.5,±0.5,±0.5]]) * 8
+        ])
+        # Simplified edges: connect if distance == √2
+        edges = []
+        for i in range(len(verts)):
+            for j in range(i+1, len(verts)):
+                if 1.9 < np.linalg.norm(verts[i] - verts[j]) < 2.1:
+                    edges.append((i,j))
+        return verts, edges
 
-    fig.update_layout(
-        scene=dict(
-            xaxis=dict(title="X", showgrid=False, zeroline=False),
-            yaxis=dict(title="Y", showgrid=False, zeroline=False),
-            zaxis=dict(title="Z", showgrid=False, zeroline=False),
-            aspectmode="cube",
-            camera=dict(eye=dict(x=1.5, y=1.5, z=1.2))
-        ),
-        paper_bgcolor="#0e1117",
-        scene_bgcolor="#0e1117",
-        font_color="white",
-        height=700
-    )
+    else:  # Random points on 4-sphere
+        np.random.seed(42)
+        verts = np.random.randn(20, 4)
+        verts /= np.linalg.norm(verts, axis=1)[:, None]
+        verts *= 0.8
+        edges = []
+        return verts, edges
 
-    # THIS IS THE CORRECT WAY TO GET DRAGGED POINTS IN STREAMLIT + PLOTLY
-    chart = st.plotly_chart(fig, use_container_width=True, key="drag3d")
+# ====================== SIDEBAR ======================
+mode = st.sidebar.radio("Mode", ["Tetrahedral 4D Graph", "3D Editor → 4D"])
+
+if mode == "3D Editor → 4D":
+    st.header("Drag 3D Points → See in 4D Tetrahedral View")
+    if "pts3d" not in st.session_state:
+        st.session_state.pts3d = basis[:4].copy() * 1.2
+
+    fig3d = go.Figure()
+    fig3d.add_trace(go.Scatter3d(x=st.session_state.pts3d[:,0], y=st.session_state.pts3d[:,1], z=st.session_state.pts3d[:,2],
+                                 mode="markers+text", marker=dict(size=12, color="white"), text=[f"P{i}" for i in range(4)]))
+    for i in range(4):
+        for j in range(i+1,4):
+            fig3d.add_trace(go.Scatter3d(x=[st.session_state.pts3d[i,0], st.session_state.pts3d[j,0]],
+                                         y=[st.session_state.pts3d[i,1], st.session_state.pts3d[j,1]],
+                                         z=[st.session_state.pts3d[i,2], st.session_state.pts3d[j,2]],
+                                         mode="lines", line=dict(color="gray", width=3), showlegend=False))
+    fig3d.update_layout(scene=dict(aspectmode='cube', camera=dict(eye=dict(x=2,y=2,z=1))),
+                        paper_bgcolor="#111", scene_bgcolor="#111", font_color="white", height=500)
+    chart = st.plotly_chart(fig3d, use_container_width=True, key="drag")
     if chart.data:
-        new_x = chart.data[0].x
-        new_y = chart.data[0].y
-        new_z = chart.data[0].z
-        new_points = np.column_stack([new_x, new_y, new_z])
-        if new_points.shape == st.session_state.points_3d.shape:
-            st.session_state.points_3d = new_points
+        new_pts = np.column_stack([chart.data[0].x, chart.data[0].y, chart.data[0].z])
+        if new_pts.shape == (4,3):
+            st.session_state.pts3d = new_pts
 
-# ================================
-# MODE 2: 4D → 3D Projection (exactly like your methane image)
-# ================================
-elif mode == "4D → 3D Projection":
-    st.header("Your 3D Model as a 4D Projection")
-    st.info("One vertex is pulled along the invisible W axis (into the screen). This is exactly how the methane diagram represents a 4-simplex.")
-
-    pts = st.session_state.points_3d.copy()
-    center = pts.mean(axis=0)
-    scale = 1.5
-
-    # 4D coordinates
-    central_4d = np.array([0.0, 0.0, 0.0, 1.8])           # the one "popping out" along W
-    base_4d    = np.hstack([pts, np.full((len(pts), 1), -0.6)])
-
-    # Perspective projection from 4D → 3D
-    def project(p4, d=5.0):
-        factor = d / (d - p4[3])
-        return p4[:3] * factor
-
-    central_3d = project(central_4d)
-    base_3d    = np.array([project(p) for p in base_4d])
-
-    fig = go.Figure()
-
-    # Central vertex (cyan, big)
-    fig.add_trace(go.Scatter3d(
-        x=[central_3d[0]], y=[central_3d[1]], z=[central_3d[2]],
-        mode="markers",
-        marker=dict(size=16, color="cyan"),
-        name="4D Vertex (W direction)"
-    ))
-
-    # Base vertices (white)
-    fig.add_trace(go.Scatter3d(
-        x=base_3d[:,0], y=base_3d[:,1], z=base_3d[:,2],
-        mode="markers+text",
-        marker=dict(size=10, color="white"),
-        text=[f"H{i}" for i in range(len(base_3d))],
-        name="3D Base"
-    ))
-
-    # Bonds from central to base
-    for p in base_3d:
-        fig.add_trace(go.Scatter3d(
-            x=[central_3d[0], p[0]],
-            y=[central_3d[1], p[1]],
-            z=[central_3d[2], p[2]],
-            mode="lines",
-            line=dict(color="cyan", width=6),
-            showlegend=False
-        ))
-
-    # Base edges (dim)
-    for i in range(len(base_3d)):
-        for j in range(i+1, len(base_3d)):
-            fig.add_trace(go.Scatter3d(
-                x=[base_3d[i,0], base_3d[j,0]],
-                y=[base_3d[i,1], base_3d[j,1]],
-                z=[base_3d[i,2], base_3d[j,2]],
-                mode="lines",
-                line=dict(color="#666", width=3),
-                showlegend=False
-            ))
-
-    # Dark conical shadow (exactly like the methane image)
-    if len(base_3d) >= 4:
-        try:
-            hull = ConvexHull(base_3d)
-            for simplex in hull.simplices:
-                triangle = base_3d[simplex]
-                # Create a pyramid from central point to each triangular face
-                x = np.append(triangle[:,0], central_3d[0])
-                y = np.append(triangle[:,1], central_3d[1])
-                z = np.append(triangle[:,2], central_3d[2])
-                fig.add_trace(go.Mesh3d(
-                    x=x, y=y, z=z,
-                    i=[0,0,0,1], j=[1,2,1,2], k=[2,1,3,3],
-                    color="rgba(40,40,60,0.9)",
-                    opacity=0.8,
-                    showlegend=False,
-                    lighting=dict(ambient=0.8)
-                ))
-        except:
-            pass  # fallback if hull fails
-
-    fig.update_layout(
-        scene=dict(
-            xaxis=dict(title="", showgrid=False, zeroline=False, showticklabels=False),
-            yaxis=dict(title="", showgrid=False, zeroline=False, showticklabels=False),
-            zaxis=dict(title="", showgrid=False, zeroline=False, showticklabels=False),
-            aspectmode="cube",
-            camera=dict(eye=dict(x=1.4, y=1.8, z=1.2))
-        ),
-        paper_bgcolor="#0e1117",
-        scene_bgcolor="#0e1117",
-        font_color="white",
-        height=800
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-# ================================
-# MODE 3: Pure 4D Polytopes (coming soon)
-# ================================
+    # Show in 4D view
+    pts4d = np.zeros((4,4))
+    pts4d[:,:3] = st.session_state.pts3d
+    pts4d[:,3] = 0
 else:
-    st.header("Regular 4D Polytopes")
-    st.write("5-cell, tesseract, 24-cell, etc. — coming in the next update!")
-    st.info("For now enjoy the perfect 4D → 3D projection in the previous tab — it’s already a real 5-cell!")
+    st.header("True 4D Graph with Tetrahedral Axes")
+    polytope_name = st.selectbox("Select 4D Object", [
+        "5-cell (Pentachoron)",
+        "Tesseract (4D Cube)",
+        "16-cell",
+        "24-cell",
+        "Random 4D Points"
+    ])
+    verts4, edges = get_polytope(polytope_name)
+    scale = st.slider("Scale", 0.5, 3.0, 1.2, 0.1)
+    show_grid = st.checkbox("Show Tetrahedral Grid", True)
+    show_axes = st.checkbox("Show 4D Axes", True)
 
-st.caption("Built because one methane diagram changed everything.")
+# ====================== MAIN 4D PLOT ======================
+fig = go.Figure()
+
+# --- Grid lines (contour-like in tetrahedral directions) ---
+if show_grid:
+    grid_size = 5
+    for i in range(4):
+        for val in np.linspace(-1, 1, grid_size):
+            if abs(val) < 1e-6: continue
+            line = np.zeros((100,4))
+            line[:, i] = np.linspace(-1.2, 1.2, 100) * scale
+            line[:, (i+1)%4] = val * scale
+            pts3d = np.array([embed_4d_to_3d(p, scale) for p in line])
+            fig.add_trace(go.Scatter3d(x=pts3d[:,0], y=pts3d[:,1], z=pts3d[:,2],
+                                       mode="lines", line=dict(color="#333", width=1), showlegend=False))
+
+# --- Four bent axes ---
+if show_axes:
+    for i in range(4):
+        axis_4d = np.zeros((2,4))
+        axis_4d[1,i] = 1.8 * scale
+        pts = np.array([embed_4d_to_3d(p, scale) for p in axis_4d])
+        fig.add_trace(go.Scatter3d(x=pts[:,0], y=pts[:,1], z=pts[:,2],
+                                   mode="lines", line=dict(color=axis_colors[i], width=8),
+                                   name=f"Axis {i}", showlegend=True))
+        # Label
+        fig.add_trace(go.Scatter3d(x=[pts[1,0]], y=[pts[1,1]], z=[pts[1,2]],
+                                   mode="text", text=[f"<b>w{i}</b>"], textposition="top center",
+                                   textfont=dict(color=axis_colors[i], size=16), showlegend=False))
+
+# --- Plot the 4D object ---
+if mode == "3D Editor → 4D":
+    verts_to_plot = pts4d
+    edges_to_plot = [(0,1),(0,2),(0,3),(1,2),(1,3),(2,3)]
+else:
+    verts_to_plot = verts4
+    edges_to_plot = edges
+
+embedded = np.array([embed_4d_to_3d(v, scale) for v in verts_to_plot])
+
+# Vertices
+fig.add_trace(go.Scatter3d(x=embedded[:,0], y=embedded[:,1], z=embedded[:,2],
+                           mode="markers", marker=dict(size=8, color="white"), name="Vertices"))
+
+# Edges
+for i, j in edges_to_plot:
+    if i >= len(embedded) or j >= len(embedded): continue
+    fig.add_trace(go.Scatter3d(x=[embedded[i,0], embedded[j,0]],
+                               y=[embedded[i,1], embedded[j,1]],
+                               z=[embedded[i,2], embedded[j,2]],
+                               mode="lines", line=dict(color="white", width=3), showlegend=False))
+
+fig.update_layout(
+    scene=dict(
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
+        zaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
+        aspectmode='cube',
+        camera=dict(eye=dict(x=1.7, y=1.7, z=1.3))
+    ),
+    paper_bgcolor="#0a0a0a",
+    scene_bgcolor="#0a0a0a",
+    font_color="white",
+    height=900,
+    legend=dict(y=0.9, x=0.8)
+)
+
+st.plotly_chart(fig, use_container_width=True)
+st.caption("Four axes at exact 109.5° — the true geometry of 4D space. Drag any 3D shape in → see it in real 4D coordinates.")
